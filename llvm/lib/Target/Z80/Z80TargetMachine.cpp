@@ -39,6 +39,7 @@
 #include "MCTargetDesc/Z80MCTargetDesc.h"
 #include "Z80.h"
 #include "Z80AccumulatorCopies.h"
+#include "Z80AlignGlobals.h"
 #include "Z80BranchCleanup.h"
 #include "Z80CheckUnsupported.h"
 #include "Z80Combiner.h"
@@ -67,6 +68,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   PassRegistry &PR = *PassRegistry::getPassRegistry();
   initializeGlobalISel(PR);
   initializeZ80AccumulatorCopiesPass(PR);
+  initializeZ80AlignGlobalsPass(PR);
   initializeZ80BranchCleanupPass(PR);
   initializeZ80CheckUnsupportedPass(PR);
   initializeZ80DanglingDebugCleanupPass(PR);
@@ -135,7 +137,7 @@ Z80TargetMachine::Z80TargetMachine(const Target &T, const Triple &TT,
   setSupportsDefaultOutlining(true);
 
   // z80asm has neither PIC nor an address-significance table.
-  if (getMCAsmInfo().isZ88DK()) {
+  if (isZ88DK()) {
     this->RM = Reloc::Static;
     this->Options.EmitAddrsig = false;
   }
@@ -164,7 +166,35 @@ Z80TargetMachine::getTargetTransformInfo(const Function &F) const {
   return TargetTransformInfo(std::make_unique<Z80TTIImpl>(this, F));
 }
 
+bool Z80TargetMachine::isZ88DK() const { return getMCAsmInfo().isZ88DK(); }
+
 void Z80TargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
+  PB.registerPipelineParsingCallback(
+      [](StringRef Name, ModulePassManager &PM,
+         ArrayRef<PassBuilder::PipelineElement>) {
+        if (Name == "z80-align-globals") {
+          PM.addPass(Z80AlignGlobalsPass());
+          return true;
+        }
+        return false;
+      });
+
+  // z88dk cannot align globals, so pin the alignment of every global before
+  // any pass derives known bits from DataLayout::getPreferredAlign. Pipeline
+  // start runs at every -O level (O0 included) and in the ThinLTO and full
+  // LTO pre-link pipelines; the full LTO link pipeline has its own hook.
+  // Codegen (llc, or clang on .ll input) runs it again in addIRPasses.
+  if (isZ88DK()) {
+    PB.registerPipelineStartEPCallback(
+        [](ModulePassManager &PM, OptimizationLevel) {
+          PM.addPass(Z80AlignGlobalsPass());
+        });
+    PB.registerFullLinkTimeOptimizationEarlyEPCallback(
+        [](ModulePassManager &PM, OptimizationLevel) {
+          PM.addPass(Z80AlignGlobalsPass());
+        });
+  }
+
   PB.registerPipelineParsingCallback(
       [](StringRef Name, LoopPassManager &PM,
          ArrayRef<PassBuilder::PipelineElement>) {
@@ -234,6 +264,12 @@ TargetPassConfig *Z80TargetMachine::createPassConfig(PassManagerBase &PM) {
 }
 
 void Z80PassConfig::addIRPasses() {
+  // First, so the codegen IR passes (LSR, CodeGenPrepare, InstCombine) and
+  // ISel see the pinned alignment, also for globals that the middle end
+  // created after pipeline start, and for llc on IR that never went through
+  // the optimizer.
+  if (getZ80TargetMachine().isZ88DK())
+    addPass(createZ80AlignGlobalsPass());
   addPass(createZ80LowerThreadLocalPass(getZ80TargetMachine()));
   addPass(createZ80CheckUnsupportedPass());
   addPass(createAtomicExpandLegacyPass());

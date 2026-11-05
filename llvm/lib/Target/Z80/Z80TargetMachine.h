@@ -57,6 +57,10 @@ public:
   // pass will resolve.
   bool useStaticFrames() const;
 
+  // Whether the output is in the z88dk format: the z88dk environment, or
+  // -z80-asm-format=z88dk. Valid once the constructor has run initAsmInfo.
+  bool isZ88DK() const;
+
   MachineFunctionInfo *
   createMachineFunctionInfo(BumpPtrAllocator &Allocator, const Function &F,
                             const TargetSubtargetInfo *STI) const override;

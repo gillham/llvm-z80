@@ -27,6 +27,7 @@ add_llvm_target(Z80CodeGen
   Z80AccumulatorCopies.cpp
   Z80AsmPrinter.cpp
   Z80BranchCleanup.cpp
+  Z80AlignGlobals.cpp
   Z80CallLowering.cpp
   Z80CallingConv.cpp
   Z80CheckUnsupported.cpp
